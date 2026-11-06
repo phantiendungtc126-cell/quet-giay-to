@@ -1,5 +1,5 @@
 // Lưu đệm để app mở được cả khi mất mạng
-const CACHE = 'qgt-v2';
+const CACHE = 'qgt-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'detector.js', 'worker.js', 'vision.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png'];
 const LIBS = [

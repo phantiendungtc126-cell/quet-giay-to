@@ -1,6 +1,7 @@
 // ================= Quét giấy tờ – điều khiển giao diện =================
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const nextFrame = () => new Promise(r => { let done = false; const go = () => { if (!done) { done = true; r(); } }; requestAnimationFrame(go); setTimeout(go, 50); });
 
 const QUALITY = {
   std: { side: 1800, jpeg: 0.72 },
@@ -146,7 +147,7 @@ const Scanner = (() => {
   let det = null;          // tứ giác mới nhất (tọa độ video)
   let shown = null;        // tứ giác đang vẽ (làm mượt)
   let ref = null;          // tứ giác trung bình trong lúc giữ yên
-  let stableSince = 0, hits = 0, lastSeen = 0, startedAt = 0, lastFoundAt = 0;
+  let lastSeen = 0, startedAt = 0, lastFoundAt = 0;
   let armed = true, lastCapQ = null, lastCapAt = 0, capturing = false, justCaptured = -1e9;
   const dbg = { dets: 0, found: 0, resets: 0, lastDiff: 0 };
 
@@ -164,7 +165,7 @@ const Scanner = (() => {
   async function start() {
     initWorker();
     setMode(auto); setFilter(filter);
-    det = shown = ref = null; hits = 0; armed = true;
+    det = shown = ref = cons = null; hist = []; armed = true;
     setHint('Đang mở máy ảnh…');
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -227,22 +228,30 @@ const Scanner = (() => {
     return { img: sctx.getImageData(0, 0, small.width, small.height), s };
   }
 
+  // Lấy ý kiến đa số trong ~1 giây gần nhất: vài khung hình nhận sai không làm hỏng việc theo dõi
+  const WINDOW_MS = 1000;
+  let hist = [], cons = null, consStart = 0, consRatio = 0;
+  const medianQuad = qs => [0, 1, 2, 3].map(i => [0, 1].map(k => { const v = qs.map(q => q[i][k]).sort((a, b) => a - b); return v[v.length >> 1]; }));
   function onDetect(q, s) {
     const now = performance.now(); dbg.dets++;
-    if (q) {
-      q = q.map(p => [p[0] / s, p[1] / s]);
-      lastSeen = lastFoundAt = now;
-      const diag = diagOf();
-      dbg.found++; if (ref) dbg.lastDiff = +(qDiff(q, ref) / diag).toFixed(4);
-      if (ref && qDiff(q, ref) / diag < 0.035) {              // vẫn là tờ giấy đó, tay chỉ hơi rung
-        ref = ref.map((p, i) => [p[0] + (q[i][0] - p[0]) * 0.35, p[1] + (q[i][1] - p[1]) * 0.35]);
-        hits++;
-      } else { ref = q.map(p => p.slice()); stableSince = now; hits = 1; dbg.resets++; }
-      det = q;
-      if (!armed && lastCapQ && (qDiff(q, lastCapQ) / diag > 0.15 || Math.abs(qArea(q) / qArea(lastCapQ) - 1) > 0.2)) armed = true;
-    } else if (now - lastSeen > 450) {                        // mất dấu đủ lâu (đã lật trang / đưa ra ngoài)
-      det = ref = null; hits = 0; armed = true;
+    if (q) { q = q.map(p => [p[0] / s, p[1] / s]); lastSeen = lastFoundAt = now; dbg.found++; }
+    hist.push({ t: now, q });
+    hist = hist.filter(h => now - h.t <= WINDOW_MS);
+    const diag = diagOf(), qs = hist.filter(h => h.q);
+    let bestM = null;
+    for (const a of qs) {
+      const m = qs.filter(b => qDiff(a.q, b.q) / diag < 0.03);
+      if (!bestM || m.length >= bestM.length) bestM = m;
     }
+    if (bestM && bestM.length >= 3 && bestM.length >= hist.length * 0.5) {
+      const c = medianQuad(bestM.map(h => h.q));
+      if (!cons || qDiff(c, cons) / diag > 0.03) { consStart = Math.min(...bestM.map(h => h.t)); dbg.resets++; }
+      cons = c; consRatio = bestM.length / hist.length;
+    } else { cons = null; consRatio = 0; }
+    ref = cons;
+    det = cons || q || (now - lastSeen < 300 ? det : null);
+    if (det && !armed && lastCapQ && (qDiff(det, lastCapQ) / diag > 0.15 || Math.abs(qArea(det) / qArea(lastCapQ) - 1) > 0.2)) armed = true;
+    if (now - lastSeen > 450) { det = ref = cons = null; hist = []; armed = true; }   // mất dấu đủ lâu: đã lật trang / đưa ra ngoài
   }
 
   function loop() {
@@ -254,20 +263,23 @@ const Scanner = (() => {
       if (worker && workerReady && !inFlight) {
         const { img, s } = grab();
         reqScale = s; inFlight = true; inFlightAt = lastSent = now; reqId++;
-        worker.postMessage({ id: reqId, img }, [img.data.buffer]);
+        const pv = cons;   // chỉ gợi ý khi đa số đã đồng ý, tránh "giữ mãi" một lần nhận sai
+        worker.postMessage({ id: reqId, img, prev: pv ? pv.map(p => [p[0] * s, p[1] * s]) : null }, [img.data.buffer]);
       } else if (!worker && Vision.isReady && now - mainDetAt > 200) {
         mainDetAt = lastSent = now;
         const { img, s } = grab();
-        let q = null; try { q = Vision.detect(img); } catch (e) { console.warn(e); }
+        const pv = cons;   // chỉ gợi ý khi đa số đã đồng ý, tránh "giữ mãi" một lần nhận sai
+        let q = null; try { q = Vision.detect(img, pv ? pv.map(p => [p[0] * s, p[1] * s]) : null); } catch (e) { console.warn(e); }
         onDetect(q, s);
       }
     }
 
     if (det) shown = shown ? shown.map((p, i) => [p[0] + (det[i][0] - p[0]) * 0.5, p[1] + (det[i][1] - p[1]) * 0.5]) : det.map(p => p.slice());
     else shown = null;
-    const held = det && ref ? now - stableSince : 0;
+    const held = cons ? now - consStart : 0;
     const edge = det && nearEdge(det);
-    draw(auto && armed && !edge ? Math.min(1, held / HOLD_MS) : 0, edge);
+    const tooSmall = cons && qArea(cons) < video.videoWidth * video.videoHeight * 0.08;
+    draw(auto && armed && !edge && !tooSmall ? Math.min(1, held / HOLD_MS) : 0, edge);
 
     if (capturing) return;
     if (now - justCaptured < 1200) { setHint('Đã chụp ✓  Đưa trang tiếp theo vào', true); return; }
@@ -278,10 +290,11 @@ const Scanner = (() => {
       return;
     }
     if (edge) { setHint('Lùi máy ra một chút để thấy đủ 4 góc'); return; }
+    if (tooSmall) { setHint('Đưa máy lại gần hơn một chút'); return; }
     if (!auto) { setHint('Bấm nút tròn để chụp'); return; }
     if (!armed) { setHint('Đã chụp trang này – lật trang khác hoặc bấm Lưu'); return; }
     setHint(held > 150 ? 'Giữ yên…' : 'Đã thấy giấy tờ', held > 150);
-    if (hits >= 3 && held >= HOLD_MS && now - lastCapAt > 1200 && Vision.isReady) capture(ref);
+    if (cons && held >= HOLD_MS && consRatio >= 0.6 && now - lastCapAt > 1200 && Vision.isReady) capture(cons);
   }
 
   function draw(prog, edge) {
@@ -309,19 +322,34 @@ const Scanner = (() => {
   async function capture(q) {
     if (capturing || !video.videoWidth) return;
     capturing = true;
-    const f = $('flash'); f.classList.add('on'); setTimeout(() => f.classList.remove('on'), 60);
+    const f = $('flash'); f.classList.add('on');
     if (navigator.vibrate) try { navigator.vibrate(30); } catch {}
     const vw = video.videoWidth, vh = video.videoHeight;
     const c = document.createElement('canvas'); c.width = vw; c.height = vh;
     c.getContext('2d').drawImage(video, 0, 0, vw, vh);
     lastCapQ = q || det; armed = false; lastCapAt = performance.now();
     setHint('Đã chụp ✓  Đang xử lý…', true);
-    await new Promise(r => setTimeout(r, 40));                 // cho hiệu ứng chớp và thông báo hiện ra trước khi xử lý nặng
+    draw(0, false);
+    try { video.pause(); } catch {}                             // đứng hình như vừa chụp ảnh
+    // chớp trắng thật nhanh rồi tắt hẳn TRƯỚC khi xử lý nặng (nếu không màn hình sẽ trắng suốt lúc xử lý)
+    await nextFrame(); await nextFrame();
+    f.style.transition = 'none'; f.classList.remove('on'); void f.offsetWidth; f.style.transition = '';
+    await nextFrame(); await nextFrame();
     let quad = q;
     if (Vision.isReady) {
       try {
         if (quad) {
-          // tinh chỉnh góc trên ảnh ~1100 điểm ảnh cho chính xác hơn
+          // tay có thể đã trôi chút ít so với khung đang theo dõi → tìm lại mép giấy trên ĐÚNG khung hình vừa chụp
+          const s1 = 480 / Math.max(vw, vh);
+          const t1 = document.createElement('canvas'); t1.width = Math.round(vw * s1); t1.height = Math.round(vh * s1);
+          const x1 = t1.getContext('2d'); x1.drawImage(c, 0, 0, t1.width, t1.height);
+          const again = Vision.detect(x1.getImageData(0, 0, t1.width, t1.height), quad.map(p => [p[0] * s1, p[1] * s1]));
+          freeCanvas(t1);
+          if (again) {
+            const a = again.map(p => [p[0] / s1, p[1] / s1]);
+            if (qDiff(a, quad) / diagOf() < 0.08) quad = a;
+          }
+          // rồi tinh chỉnh góc trên ảnh ~1100 điểm ảnh cho chính xác hơn
           const s2 = Math.min(1, 1100 / Math.max(vw, vh));
           const t = document.createElement('canvas'); t.width = Math.round(vw * s2); t.height = Math.round(vh * s2);
           t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
@@ -345,11 +373,13 @@ const Scanner = (() => {
       console.error(e); toast('Lỗi khi xử lý ảnh: ' + e.message);
     } finally {
       freeCanvas(c); capturing = false;
+      hist = []; cons = null;
+      try { await video.play(); } catch {}
     }
   }
 
   // nút bấm
-  $('shutter').onclick = () => capture(det ? (ref || det) : null);
+  $('shutter').onclick = () => capture(cons || det || null);
   $('btnMode').onclick = () => { setMode(!auto); armed = true; toast(auto ? 'Tự chụp khi giữ yên' : 'Chụp thủ công'); };
   $('btnFilterQuick').onclick = () => $('filterBar').classList.toggle('hidden');
   $('filterBar').onclick = e => { const b = e.target.closest('button'); if (b) { setFilter(b.dataset.f); $('filterBar').classList.add('hidden'); } };
@@ -365,7 +395,7 @@ const Scanner = (() => {
   // nạp sẵn luồng nhận diện ngay khi mở app để lúc bấm Quét là dùng được liền
   setTimeout(initWorker, 1500);
 
-  return { start, stop, dbg: () => Object.assign({ hits, workerReady, visionReady: Vision.isReady, armed, held: Math.round(performance.now() - stableSince) }, dbg) };
+  return { start, stop, dbg: () => Object.assign({ cons: !!cons, ratio: +consRatio.toFixed(2), hist: hist.length, workerReady, visionReady: Vision.isReady, armed, held: cons ? Math.round(performance.now() - consStart) : 0 }, dbg) };
 })();
 
 function updateThumb(pop) {

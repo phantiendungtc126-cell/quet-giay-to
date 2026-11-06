@@ -9,7 +9,8 @@
     byAng.forEach((p, i) => { if (p[0] + p[1] < m) { m = p[0] + p[1]; k = i; } });
     return byAng.slice(k).concat(byAng.slice(0, k));
   }
-  function detect(source) {
+  // prev: tứ giác đang theo dõi ở khung hình trước (cùng hệ tọa độ) – ưu tiên giữ nó để khung không nhảy
+  function detect(source, prev) {
   const src = source instanceof ImageData ? cv.matFromImageData(source) : cv.imread(source);
   const W = src.cols, H = src.rows, A = W * H;
   const mats = [];
@@ -21,7 +22,7 @@
 
     // ---- bản đồ độ lớn gradient (bằng chứng đường biên)
     // lấy gradient lớn nhất trong 3 kênh màu: bắt được cả mép "cùng độ sáng, khác màu" (thẻ xanh trên bàn gỗ)
-    const mag = new Float32Array(A);
+    const mag = new Float32Array(A), gxs = new Float32Array(A), gys = new Float32Array(A);
     {
       const ch = new cv.MatVector(); cv.split(rgbB, ch);
       const gx = M(), gy = M();
@@ -29,7 +30,7 @@
         const m = ch.get(c);
         cv.Sobel(m, gx, cv.CV_32F, 1, 0, 3); cv.Sobel(m, gy, cv.CV_32F, 0, 1, 3);
         const a = gx.data32F, b = gy.data32F;
-        for (let i = 0; i < A; i++) { const v = Math.hypot(a[i], b[i]); if (v > mag[i]) mag[i] = v; }
+        for (let i = 0; i < A; i++) { const v = Math.hypot(a[i], b[i]); if (v > mag[i]) { mag[i] = v; gxs[i] = a[i]; gys[i] = b[i]; } }
         m.delete();
       }
       ch.delete();
@@ -40,7 +41,7 @@
     const Tm = Math.max(40, mmean * 1.6);          // ngưỡng "có biên"
     const col = rgbB.data;                          // màu đã làm mượt để so trong/ngoài
 
-    const magAt = (x, y) => { x = Math.round(x); y = Math.round(y); return (x < 0 || y < 0 || x >= W || y >= H) ? -1 : mag[y * W + x]; };
+    const magAt = makeMagAt(mag, gxs, gys, W, H);
     const colAt = (x, y) => { x = Math.round(x); y = Math.round(y); if (x < 0 || y < 0 || x >= W || y >= H) return null; const k = (y * W + x) * 3; return [col[k], col[k + 1], col[k + 2]]; };
 
     // ---- nguồn ứng viên
@@ -114,28 +115,31 @@
     // ---- chấm điểm
     function score(q0) {
       const q = order(q0);
-      if (!angleOk(q)) return null;
+      if (!angleOk(q) || !sidesOk(q)) return null;
       const area = Math.abs(polyArea(q)) / A;
-      if (area < 0.04 || area > 0.97) return null;
+      if (area < 0.06 || area > 0.97) return null;
       let supSum = 0, supMin = 1, difSum = 0, difMin = 1e9;
       const ins = [0, 0, 0], ins2 = [0, 0, 0]; let ni = 0;   // màu phía trong mép: giấy thật thì đồng đều
+      let sideStdMax = 0;                                       // độ lốm đốm lớn nhất dọc theo một cạnh (vân gỗ, vệt sáng…)
       for (let s = 0; s < 4; s++) {
         const p0 = q[s], p1 = q[(s + 1) % 4];
         const dx = p1[0] - p0[0], dy = p1[1] - p0[1], L = Math.hypot(dx, dy);
         if (L < 12) return null;
         const nx = -dy / L, ny = dx / L;           // pháp tuyến hướng vào trong
         let n = 0, sup = 0, dif = 0, nd = 0;
+        const si = [0, 0, 0], si2 = [0, 0, 0]; let ns = 0;
         for (let t = 0.06; t <= 0.94; t += 0.022) {
           const x = p0[0] + dx * t, y = p0[1] + dy * t;
-          let m = -1; for (let o = -2; o <= 2; o++) m = Math.max(m, magAt(x + nx * o, y + ny * o));
+          let m = -1; for (let o = -2; o <= 2; o++) m = Math.max(m, magAt(x + nx * o, y + ny * o, nx, ny));
           if (m < 0) continue;
           n++; if (m > Tm) sup++;
           const ci = colAt(x + nx * 5, y + ny * 5), co = colAt(x - nx * 5, y - ny * 5);
           if (ci && co) { dif += (Math.abs(ci[0] - co[0]) + Math.abs(ci[1] - co[1]) + Math.abs(ci[2] - co[2])) / 3; nd++; }
           const cd = colAt(x + nx * 7, y + ny * 7);
-          if (cd) { for (let k = 0; k < 3; k++) { ins[k] += cd[k]; ins2[k] += cd[k] * cd[k]; } ni++; }
+          if (cd) { for (let k = 0; k < 3; k++) { ins[k] += cd[k]; ins2[k] += cd[k] * cd[k]; si[k] += cd[k]; si2[k] += cd[k] * cd[k]; } ni++; ns++; }
         }
         if (n < 8) return null;
+        if (ns > 4) { let sdv = 0; for (let k = 0; k < 3; k++) { const m = si[k] / ns; sdv += Math.sqrt(Math.max(0, si2[k] / ns - m * m)); } sideStdMax = Math.max(sideStdMax, sdv / 3); }
         const sr = sup / n, dr = nd ? dif / nd : 0;
         supSum += sr; supMin = Math.min(supMin, sr); difSum += dr; difMin = Math.min(difMin, dr);
       }
@@ -143,16 +147,21 @@
       const sup = supSum / 4, dif = difSum / 4;
       let sd = 0; for (let k = 0; k < 3; k++) { const m = ins[k] / ni; sd += Math.sqrt(Math.max(0, ins2[k] / ni - m * m)); } sd /= 3;
       const uni = Math.max(0.15, Math.min(1, 1 - (sd - 18) / 50));
-      const sc = Math.sqrt(area) * sup * sup * (0.5 + 0.5 * supMin) * Math.min(1, dif / 25) * uni;
-      return { q, sc, uni };
+      const side = Math.max(0.3, Math.min(1, 1 - (sideStdMax - 16) / 40));
+      const sc = Math.sqrt(area) * sup * sup * (0.5 + 0.5 * supMin) * Math.min(1, dif / 25) * uni * side;
+      return { q, sc, uni, sideStd: sideStdMax };
     }
     const valid = [];
     for (const c of cands) { const r = score(c); if (r) valid.push(r); }
     if (!valid.length) return null;
+    const diag = Math.hypot(W, H);
+    const nearPrev = q => prev && Math.max(...q.map((p, i) => Math.hypot(p[0] - prev[i][0], p[1] - prev[i][1]))) / diag < 0.05;
+    if (prev) valid.forEach(v => { v.near = nearPrev(v.q); if (v.near) v.sc *= 1.4; });
+    if (root.__detDbg) root.__detDbg = valid.map(v => ({ q: v.q.map(p => p.map(Math.round)), sc: +v.sc.toFixed(3), uni: +v.uni.toFixed(2), sideStd: Math.round(v.sideStd) }));
     let best = valid.reduce((a, b) => (b.sc > a.sc ? b : a));
     // Ưu tiên mép ngoài: khung hoa văn trong GCN, dải màu đầu thẻ CCCD… nằm gọn trong mép giấy thật
     for (let guard = 0; guard < 5; guard++) {
-      const outer = valid.filter(v => v !== best && v.sc >= best.sc * 0.45 && v.uni >= 0.3 && contains(v.q, best.q, 2))
+      const outer = valid.filter(v => v !== best && v.sc >= best.sc * 0.45 && v.uni >= 0.3 && v.sideStd < Math.max(20, best.sideStd + 6) && (!best.near || v.near) && contains(v.q, best.q, 2))
         .sort((a, b) => Math.abs(polyArea(b.q)) - Math.abs(polyArea(a.q)))[0];
       if (!outer) break;
       best = outer;
@@ -174,6 +183,23 @@
       return true;
     }) && Math.abs(polyArea(q)) < Math.abs(polyArea(r)) * 2.2;
   }
+  // hai cạnh đối diện không chênh nhau quá nhiều (loại hình thang nhọn – thường là vân bàn, vệt sáng)
+  function sidesOk(q) {
+    const L = i => Math.hypot(q[(i + 1) % 4][0] - q[i][0], q[(i + 1) % 4][1] - q[i][1]);
+    const r1 = L(0) / L(2), r2 = L(1) / L(3);
+    return r1 > 0.6 && r1 < 1 / 0.6 && r2 > 0.6 && r2 < 1 / 0.6;
+  }
+  // Độ lớn biên tại (x,y). Nếu cho pháp tuyến (nx,ny) thì chỉ tính biên chạy song song với cạnh đang xét:
+  // cạnh giả cắt chéo qua mép giấy thật sẽ không được tính là có biên.
+  function makeMagAt(mag, gxs, gys, W, H) {
+    return (x, y, nx, ny) => {
+      x = Math.round(x); y = Math.round(y);
+      if (x < 0 || y < 0 || x >= W || y >= H) return -1;
+      const i = y * W + x, m = mag[i];
+      if (nx === undefined || m < 1) return m;
+      return Math.abs(gxs[i] * nx + gys[i] * ny) / m >= 0.72 ? m : 0;
+    };
+  }
   function polyArea(q) { let a = 0; for (let i = 0; i < 4; i++) { const p = q[i], r = q[(i + 1) % 4]; a += p[0] * r[1] - r[0] * p[1]; } return a / 2; }
   function angleOk(q) {
     for (let i = 0; i < 4; i++) {
@@ -181,7 +207,7 @@
       const v1 = [a[0] - b[0], a[1] - b[1]], v2 = [c[0] - b[0], c[1] - b[1]];
       const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2) + 1e-9);
       const deg = Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI;
-      if (deg < 45 || deg > 135) return false;
+      if (deg < 55 || deg > 125) return false;
     }
     return true;
   }
@@ -196,7 +222,7 @@
       for (let t = 0.1; t <= 0.9; t += 0.02) {
         const x = p0[0] + dx * t, y = p0[1] + dy * t;
         let bm = -1, bo = 0;
-        for (let o = -R; o <= R; o += 0.5) { const m = magAt(x + nx * o, y + ny * o); if (m > bm) { bm = m; bo = o; } }
+        for (let o = -R; o <= R; o += 0.5) { const m = magAt(x + nx * o, y + ny * o, nx, ny); if (m > bm) { bm = m; bo = o; } }
         if (bm > Tm) pts.push([x + nx * bo, y + ny * bo]);
       }
       let line = null;
@@ -232,18 +258,18 @@
 
   // gradient lớn nhất trong 3 kênh màu
   function colorGrad(rgbB, W, H) {
-    const A = W * H, mag = new Float32Array(A);
+    const A = W * H, mag = new Float32Array(A), gxs = new Float32Array(A), gys = new Float32Array(A);
     const ch = new cv.MatVector(); cv.split(rgbB, ch);
     const gx = new cv.Mat(), gy = new cv.Mat();
     for (let c = 0; c < 3; c++) {
       const m = ch.get(c);
       cv.Sobel(m, gx, cv.CV_32F, 1, 0, 3); cv.Sobel(m, gy, cv.CV_32F, 0, 1, 3);
       const a = gx.data32F, b = gy.data32F;
-      for (let i = 0; i < A; i++) { const v = Math.hypot(a[i], b[i]); if (v > mag[i]) mag[i] = v; }
+      for (let i = 0; i < A; i++) { const v = Math.hypot(a[i], b[i]); if (v > mag[i]) { mag[i] = v; gxs[i] = a[i]; gys[i] = b[i]; } }
       m.delete();
     }
     ch.delete(); gx.delete(); gy.delete();
-    return mag;
+    return { mag, gxs, gys };
   }
 
   // Tinh chỉnh tứ giác q (tọa độ của imageData) trên ảnh độ phân giải cao hơn
@@ -254,10 +280,10 @@
       const W = src.cols, H = src.rows, A = W * H;
       cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
       cv.GaussianBlur(rgb, rgbB, new cv.Size(5, 5), 0);
-      const mag = colorGrad(rgbB, W, H);
+      const { mag, gxs, gys } = colorGrad(rgbB, W, H);
       let ms = 0; for (let i = 0; i < A; i++) ms += mag[i];
       const Tm = Math.max(40, (ms / A) * 1.6);
-      const magAt = (x, y) => { x = Math.round(x); y = Math.round(y); return (x < 0 || y < 0 || x >= W || y >= H) ? -1 : mag[y * W + x]; };
+      const magAt = makeMagAt(mag, gxs, gys, W, H);
       return refine(order(q), magAt, Tm, W, H, 8) || q;
     } finally { src.delete(); rgb.delete(); rgbB.delete(); }
   }

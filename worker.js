@@ -17,6 +17,6 @@ onmessage = e => {
   const { id, img } = e.data;
   if (!ready) { postMessage({ type: 'det', id, q: null, notReady: true }); return; }
   let q = null;
-  try { q = Detector.detect(img); } catch (err) { q = null; }
+  try { q = Detector.detect(img, e.data.prev || null); } catch (err) { q = null; }
   postMessage({ type: 'det', id, q });
 };
