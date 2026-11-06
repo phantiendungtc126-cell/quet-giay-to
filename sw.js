@@ -1,6 +1,6 @@
 // Lưu đệm để app mở được cả khi mất mạng
-const CACHE = 'qgt-v1';
-const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'vision.js', 'app.js', 'manifest.webmanifest',
+const CACHE = 'qgt-v2';
+const SHELL = ['./', 'index.html', 'style.css', 'db.js', 'detector.js', 'worker.js', 'vision.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png'];
 const LIBS = [
   'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',

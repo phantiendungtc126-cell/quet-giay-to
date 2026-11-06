@@ -1,4 +1,4 @@
-// Nhận diện mép giấy, nắn phẳng, lọc ảnh (dùng OpenCV.js)
+// Nắn phẳng, lọc ảnh (dùng OpenCV.js); nhận diện mép giấy ở detector.js
 const Vision = (() => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   let isReady = false;
@@ -16,91 +16,10 @@ const Vision = (() => {
 
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
-  // Sắp 4 điểm theo thứ tự: trên-trái, trên-phải, dưới-phải, dưới-trái
-  function order(pts) {
-    const s = pts.map(p => p[0] + p[1]), d = pts.map(p => p[1] - p[0]);
-    const tl = pts[s.indexOf(Math.min(...s))], br = pts[s.indexOf(Math.max(...s))];
-    const tr = pts[d.indexOf(Math.min(...d))], bl = pts[d.indexOf(Math.max(...d))];
-    const q = [tl, tr, br, bl];
-    // nếu trùng điểm (giấy xoay ~45°) thì sắp theo góc quanh tâm
-    const uniq = new Set(q.map(p => p.join(','))).size === 4;
-    if (uniq) return q;
-    const cx = pts.reduce((a, p) => a + p[0], 0) / 4, cy = pts.reduce((a, p) => a + p[1], 0) / 4;
-    const byAng = pts.slice().sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
-    // xoay để điểm có x+y nhỏ nhất lên đầu
-    let k = 0, m = Infinity;
-    byAng.forEach((p, i) => { if (p[0] + p[1] < m) { m = p[0] + p[1]; k = i; } });
-    return byAng.slice(k).concat(byAng.slice(0, k));
-  }
-
-  function angleOk(q) {
-    for (let i = 0; i < 4; i++) {
-      const a = q[(i + 3) % 4], b = q[i], c = q[(i + 1) % 4];
-      const v1 = [a[0] - b[0], a[1] - b[1]], v2 = [c[0] - b[0], c[1] - b[1]];
-      const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2) + 1e-9);
-      const deg = Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI;
-      if (deg < 40 || deg > 140) return false;
-    }
-    return true;
-  }
-
-  function pickQuad(bin, W, H, best) {
-    const area = W * H;
-    const contours = new cv.MatVector(), hier = new cv.Mat();
-    cv.findContours(bin, contours, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-    for (let i = 0; i < contours.size(); i++) {
-      const c = contours.get(i);
-      const a = cv.contourArea(c);
-      if (a < area * 0.1 || a > area * 0.96) { c.delete(); continue; }
-      const hull = new cv.Mat();
-      cv.convexHull(c, hull, false, true);
-      const peri = cv.arcLength(hull, true);
-      for (const eps of [0.02, 0.035, 0.05, 0.07]) {
-        const ap = new cv.Mat();
-        cv.approxPolyDP(hull, ap, eps * peri, true);
-        if (ap.rows === 4) {
-          const d = ap.data32S;
-          const q = order([[d[0], d[1]], [d[2], d[3]], [d[4], d[5]], [d[6], d[7]]]);
-          const qa = Math.abs(cv.contourArea(ap));
-          ap.delete();
-          if (angleOk(q) && (!best || qa > best.area)) best = { q, area: qa };
-          break;
-        }
-        ap.delete();
-      }
-      hull.delete(); c.delete();
-    }
-    contours.delete(); hier.delete();
-    return best;
-  }
-
-  // Tìm tứ giác giấy trong ảnh nhỏ (canvas hoặc ImageData). Trả về [[x,y]x4] hoặc null
-  function detect(source) {
-    if (!isReady) return null;
-    const src = source instanceof ImageData ? cv.matFromImageData(source) : cv.imread(source);
-    const W = src.cols, H = src.rows;
-    const gray = new cv.Mat(), bin = new cv.Mat();
-    const k3 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-    const k5 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-    let best = null;
-    try {
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-      // Lượt 1: đường biên Canny
-      cv.Canny(gray, bin, 30, 100);
-      cv.dilate(bin, bin, k3);
-      best = pickQuad(bin, W, H, best);
-      // Lượt 2: tách nền theo ngưỡng Otsu (giấy trắng trên nền tối)
-      if (!best || best.area < W * H * 0.25) {
-        cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-        cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, k5);
-        best = pickQuad(bin, W, H, best);
-      }
-    } finally {
-      src.delete(); gray.delete(); bin.delete(); k3.delete(); k5.delete();
-    }
-    return best ? best.q : null;
-  }
+  // Bộ nhận diện mép giấy nằm trong detector.js (dùng chung với Web Worker)
+  const detect = src => Detector.detect(src);
+  const refineQuad = (src, q) => Detector.refineQuad(src, q);
+  const order = q => Detector.order(q);
 
   // Tỉ lệ chuẩn: CCCD 85,6×54 mm; A4 210×297 mm
   function snapRatio(W, H) {
@@ -123,7 +42,7 @@ const Vision = (() => {
     let W = Math.max(dist(q[0], q[1]), dist(q[3], q[2]));
     let H = Math.max(dist(q[0], q[3]), dist(q[1], q[2]));
     [W, H] = snapRatio(W, H);
-    const s = Math.min(1.25, maxSide / Math.max(W, H));
+    const s = Math.min(1, maxSide / Math.max(W, H));          // không phóng to: không thêm chi tiết, chỉ chậm hơn
     W = Math.round(W * s); H = Math.round(H * s);
     const from = cv.matFromArray(4, 1, cv.CV_32FC2, q.flat());
     const to = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, W, 0, W, H, 0, H]);
@@ -141,10 +60,12 @@ const Vision = (() => {
     const W = m.cols, H = m.rows, f = 8;
     const small = new cv.Mat(), bg = new cv.Mat();
     cv.resize(m, small, new cv.Size(Math.max(8, Math.round(W / f)), Math.max(8, Math.round(H / f))), 0, 0, cv.INTER_AREA);
-    const k = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9));
-    cv.dilate(small, small, k);                 // xóa nét chữ (tối) -> còn màu giấy
+    // vùng lấy mẫu ~45% cạnh ngắn: đủ rộng để "nhảy qua" ảnh chân dung, con dấu, khối chữ đậm
+    const ks = Math.max(9, Math.round(Math.min(small.cols, small.rows) * 0.45)) | 1;
+    const k = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(ks, ks));
+    cv.dilate(small, small, k);                 // xóa nét chữ, ảnh tối -> còn màu giấy
     cv.medianBlur(small, small, 5);
-    cv.GaussianBlur(small, small, new cv.Size(9, 9), 0);
+    cv.GaussianBlur(small, small, new cv.Size(ks, ks), 0);
     cv.resize(small, bg, new cv.Size(W, H), 0, 0, cv.INTER_LINEAR);
     // chặn dưới để vùng ảnh chân dung / con dấu không bị cháy sáng
     const fl = new cv.Mat(H, W, bg.type(), m.channels() === 3 ? new cv.Scalar(floor, floor, floor) : new cv.Scalar(floor));
@@ -187,5 +108,5 @@ const Vision = (() => {
     }
   }
 
-  return { ready, get isReady() { return isReady; }, detect, warp, applyFilter, order };
+  return { ready, get isReady() { return isReady; }, detect, refineQuad, warp, applyFilter, order };
 })();
