@@ -585,12 +585,50 @@ $('reviewSave').onclick = async () => {
     $('docName').value = ''; session.typeChosen = false;
     busy(false);
     show('home'); renderList();
-    toast('Đã lưu trên máy' + (doc.status === 'pending' && Settings.get('autoUpload') ? ', đang đẩy lên Drive…' : ''));
+    const toDrive = doc.status === 'pending' && Settings.get('autoUpload');
+    if (Settings.get('saveToFiles')) {
+      if (isStandalone()) showSavedSheet(doc, toDrive);       // app ngoài màn hình chính: cần thêm 1 chạm để mở bảng Lưu vào Tệp
+      else { downloadPdf(doc); toast('Chạm "Tải về" để lưu vào ứng dụng Tệp' + (toDrive ? ' · đang đẩy lên Drive…' : ''), 4500); }
+    } else toast('Đã lưu trên máy' + (toDrive ? ', đang đẩy lên Drive…' : ''));
     if (Settings.get('autoUpload')) Uploader.run();
   } catch (e) {
     busy(false); console.error(e); alert('Không lưu được: ' + e.message);
   }
 };
+
+// ================= LƯU VÀO ỨNG DỤNG TỆP =================
+// Web app không được tự ghi vào Tệp: iPhone luôn hỏi lại. Safari: hỏi "Tải về" (1 chạm) → Tệp › Tải về.
+// App mở từ màn hình chính: mở bảng chia sẻ → "Lưu vào Tệp".
+function isStandalone() {
+  return window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+}
+function pdfFile(doc) { return new File([doc.pdf], doc.fileName, { type: 'application/pdf' }); }
+function downloadPdf(doc) {
+  const url = URL.createObjectURL(pdfFile(doc));
+  const a = document.createElement('a'); a.href = url; a.download = doc.fileName; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+async function sharePdf(doc) {
+  const file = pdfFile(doc);
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: doc.fileName }); return true; }
+    catch (e) { if (e && e.name === 'AbortError') return false; }
+  }
+  downloadPdf(doc); return true;
+}
+function saveToFiles(doc) {
+  if (isStandalone()) { toast('Chọn "Lưu vào Tệp" trong bảng vừa mở', 3000); return sharePdf(doc); }
+  downloadPdf(doc); toast('Chạm "Tải về" để lưu vào ứng dụng Tệp', 3500);
+}
+function showSavedSheet(doc, toDrive) {
+  $('savedName').textContent = doc.fileName;
+  $('savedDrive').textContent = toDrive ? 'Đang đẩy một bản lên Google Drive…' : (Settings.get('url') ? '' : 'Chưa nối Google Drive – vào Cài đặt để nối');
+  $('savedSheet').classList.remove('hidden');
+  $('savedFiles').onclick = async () => { await sharePdf(doc); $('savedSheet').classList.add('hidden'); };
+}
+$('savedClose').onclick = () => $('savedSheet').classList.add('hidden');
+$('savedSheet').onclick = e => { if (e.target.id === 'savedSheet') $('savedSheet').classList.add('hidden'); };
 
 // ================= CHỈNH GÓC =================
 const Cropper = (() => {
@@ -781,16 +819,8 @@ async function openDetail(id) {
   show('detail');
 }
 $('detailBack').onclick = () => { show('home'); renderList(); };
-$('detailShare').onclick = async () => {
-  const d = detailDoc; if (!d) return;
-  const file = new File([d.pdf], d.fileName, { type: 'application/pdf' });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: d.fileName }); } catch {}
-  } else {
-    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = d.fileName;
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-  }
-};
+$('detailFiles').onclick = () => { if (detailDoc) saveToFiles(detailDoc); };
+$('detailShare').onclick = () => { if (detailDoc) sharePdf(detailDoc); };
 $('detailUpload').onclick = async () => {
   if (!Settings.get('url')) { show('settings'); loadSettings(); toast('Nhập địa chỉ Apps Script trước'); return; }
   busy(true, 'Đang đẩy lên Drive…');
@@ -818,6 +848,7 @@ function segSet(id, attr, val) { document.querySelectorAll(`#${id} button`).forE
 async function loadSettings() {
   $('setUrl').value = Settings.get('url'); $('setSecret').value = Settings.get('secret');
   $('setAutoUpload').checked = Settings.get('autoUpload'); $('setAutoCapture').checked = Settings.get('autoCapture');
+  $('setSaveToFiles').checked = Settings.get('saveToFiles');
   segSet('setFilter', 'f', Settings.get('filter')); segSet('setQuality', 'q', Settings.get('quality'));
   $('setTestResult').textContent = '';
   try {
@@ -833,6 +864,7 @@ $('settingsBack').onclick = () => { show('home'); renderList(); };
 $('setUrl').onchange = () => { Settings.set('url', $('setUrl').value.trim()); };
 $('setSecret').onchange = () => { Settings.set('secret', $('setSecret').value.trim()); };
 $('setAutoUpload').onchange = e => Settings.set('autoUpload', e.target.checked);
+$('setSaveToFiles').onchange = e => Settings.set('saveToFiles', e.target.checked);
 $('setAutoCapture').onchange = e => Settings.set('autoCapture', e.target.checked);
 $('setFilter').onclick = e => { const b = e.target.closest('button'); if (b) { Settings.set('filter', b.dataset.f); segSet('setFilter', 'f', b.dataset.f); } };
 $('setQuality').onclick = e => { const b = e.target.closest('button'); if (b) { Settings.set('quality', b.dataset.q); segSet('setQuality', 'q', b.dataset.q); } };

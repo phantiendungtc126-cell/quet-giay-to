@@ -41,7 +41,7 @@ const DB = (() => {
 // Cài đặt (lưu localStorage, bọc try/catch)
 const Settings = (() => {
   const KEY = 'qgt-settings';
-  const def = { url: '', secret: '', autoUpload: true, autoCapture: true, filter: 'color', quality: 'high' };
+  const def = { url: '', secret: '', autoUpload: true, saveToFiles: true, autoCapture: true, filter: 'color', quality: 'high' };
   let cur;
   try { cur = Object.assign({}, def, JSON.parse(localStorage.getItem(KEY) || '{}')); }
   catch { cur = Object.assign({}, def); }

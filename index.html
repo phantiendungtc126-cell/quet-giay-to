@@ -167,7 +167,8 @@
     <div class="detail-pages" id="detailPages"></div>
     <div class="detail-info" id="detailInfo"></div>
     <div class="btn-col">
-      <button class="btn primary" id="detailShare">Chia sẻ / Lưu vào máy</button>
+      <button class="btn primary" id="detailFiles">Lưu vào ứng dụng Tệp</button>
+      <button class="btn" id="detailShare">Chia sẻ (Zalo, Mail…)</button>
       <button class="btn" id="detailUpload">Đẩy lên Google Drive</button>
       <a class="btn" id="detailOpenDrive" target="_blank" rel="noopener">Mở trên Google Drive</a>
       <button class="btn" id="detailRename">Đổi tên</button>
@@ -196,6 +197,15 @@
         <input type="checkbox" id="setAutoUpload" checked>
         <span>Tự đẩy lên Drive ngay khi lưu</span>
       </label>
+    </div>
+
+    <h3 class="group-title">Ứng dụng Tệp trên iPhone</h3>
+    <div class="card">
+      <label class="check">
+        <input type="checkbox" id="setSaveToFiles" checked>
+        <span>Lưu thêm một bản PDF vào ứng dụng Tệp ngay sau khi quét</span>
+      </label>
+      <p class="field-help">iPhone luôn hỏi lại trước khi lưu: chạm <b>Tải về</b> là file vào <b>Tệp › Tải về</b>. Muốn đổi chỗ lưu: Cài đặt iPhone › Safari › Tải về.</p>
     </div>
 
     <h3 class="group-title">Quét</h3>
@@ -229,6 +239,15 @@
 </section>
 
 <div id="toast" class="toast"></div>
+<div id="savedSheet" class="sheet hidden">
+  <div class="sheet-card">
+    <div class="sheet-title">Đã lưu ✓</div>
+    <div class="sheet-name" id="savedName"></div>
+    <div class="sheet-sub" id="savedDrive"></div>
+    <button class="btn primary" id="savedFiles">Lưu vào ứng dụng Tệp</button>
+    <button class="btn" id="savedClose">Xong</button>
+  </div>
+</div>
 <div id="busy" class="busy hidden"><div class="spinner"></div><p id="busyText">Đang xử lý…</p></div>
 
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
